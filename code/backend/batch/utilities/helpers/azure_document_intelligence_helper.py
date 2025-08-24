@@ -1,6 +1,7 @@
 import logging
 from azure.core.credentials import AzureKeyCredential
-from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.ai.documentintelligence import DocumentIntelligenceClient
+from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from .azure_credential_utils import get_azure_credential
 import html
 import traceback
@@ -9,15 +10,16 @@ from .env_helper import EnvHelper
 logger = logging.getLogger(__name__)
 
 
-class AzureFormRecognizerClient:
+class AzureDocumentIntelligenceClient:
     def __init__(self) -> None:
         env_helper: EnvHelper = EnvHelper()
 
+        # Keep the same environment variable names for backward compatibility
         self.AZURE_FORM_RECOGNIZER_ENDPOINT: str = (
             env_helper.AZURE_FORM_RECOGNIZER_ENDPOINT
         )
         if env_helper.AZURE_AUTH_TYPE == "rbac":
-            self.document_analysis_client = DocumentAnalysisClient(
+            self.document_intelligence_client = DocumentIntelligenceClient(
                 endpoint=self.AZURE_FORM_RECOGNIZER_ENDPOINT,
                 credential=get_azure_credential(),
                 headers={
@@ -27,7 +29,7 @@ class AzureFormRecognizerClient:
         else:
             self.AZURE_FORM_RECOGNIZER_KEY: str = env_helper.AZURE_FORM_RECOGNIZER_KEY
 
-            self.document_analysis_client = DocumentAnalysisClient(
+            self.document_intelligence_client = DocumentIntelligenceClient(
                 endpoint=self.AZURE_FORM_RECOGNIZER_ENDPOINT,
                 credential=AzureKeyCredential(self.AZURE_FORM_RECOGNIZER_KEY),
                 headers={
@@ -55,56 +57,65 @@ class AzureFormRecognizerClient:
         for row_cells in rows:
             table_html += "<tr>"
             for cell in row_cells:
-                tag = (
-                    "th"
-                    if (cell.kind == "columnHeader" or cell.kind == "rowHeader")
-                    else "td"
-                )
+                tag = "th" if cell.kind == "columnHeader" else "td"
                 cell_spans = ""
-                if cell.column_span > 1:
-                    cell_spans += f" colSpan={cell.column_span}"
-                if cell.row_span > 1:
-                    cell_spans += f" rowSpan={cell.row_span}"
+                if cell.column_span is not None and cell.column_span > 1:
+                    cell_spans += f' colspan="{cell.column_span}"'
+                if cell.row_span is not None and cell.row_span > 1:
+                    cell_spans += f' rowspan="{cell.row_span}"'
                 table_html += f"<{tag}{cell_spans}>{html.escape(cell.content)}</{tag}>"
             table_html += "</tr>"
         table_html += "</table>"
         return table_html
 
     def begin_analyze_document_from_url(
-        self, source_url: str, use_layout: bool = True, paragraph_separator: str = ""
+        self,
+        source_url: str,
+        use_layout: bool = False,
     ):
-        offset = 0
         page_map = []
-        model_id = "prebuilt-layout" if use_layout else "prebuilt-read"
+        offset = 0
+
+        if use_layout:
+            model_id = "prebuilt-layout"
+        else:
+            model_id = "prebuilt-read"
 
         try:
             logger.info("Method begin_analyze_document_from_url started")
-            logger.info(f"Model ID selected: {model_id}")
-            poller = self.document_analysis_client.begin_analyze_document_from_url(
-                model_id, document_url=source_url
+            logger.info("Model ID selected: %s", model_id)
+
+            # Create the analyze request
+            analyze_request = AnalyzeDocumentRequest(url_source=source_url)
+
+            poller = self.document_intelligence_client.begin_analyze_document(
+                model_id=model_id, analyze_request=analyze_request
             )
-            form_recognizer_results = poller.result()
+            document_intelligence_results = poller.result()
 
             # (if using layout) mark all the positions of headers
             roles_start = {}
             roles_end = {}
-            for paragraph in form_recognizer_results.paragraphs:
-                # if paragraph.role!=None:
-                para_start = paragraph.spans[0].offset
-                para_end = paragraph.spans[0].offset + paragraph.spans[0].length
-                roles_start[para_start] = (
-                    paragraph.role if paragraph.role is not None else "paragraph"
-                )
-                roles_end[para_end] = (
-                    paragraph.role if paragraph.role is not None else "paragraph"
-                )
+            if hasattr(document_intelligence_results, 'paragraphs') and document_intelligence_results.paragraphs:
+                for paragraph in document_intelligence_results.paragraphs:
+                    # if paragraph.role!=None:
+                    para_start = paragraph.spans[0].offset
+                    para_end = paragraph.spans[0].offset + paragraph.spans[0].length
+                    roles_start[para_start] = (
+                        paragraph.role if paragraph.role is not None else "paragraph"
+                    )
+                    roles_end[para_end] = (
+                        paragraph.role if paragraph.role is not None else "paragraph"
+                    )
 
-            for page_num, page in enumerate(form_recognizer_results.pages):
-                tables_on_page = [
-                    table
-                    for table in form_recognizer_results.tables
-                    if table.bounding_regions[0].page_number == page_num + 1
-                ]
+            for page_num, page in enumerate(document_intelligence_results.pages):
+                tables_on_page = []
+                if hasattr(document_intelligence_results, 'tables') and document_intelligence_results.tables:
+                    tables_on_page = [
+                        table
+                        for table in document_intelligence_results.tables
+                        if table.bounding_regions[0].page_number == page_num + 1
+                    ]
 
                 # (if using layout) mark all positions of the table spans in the page
                 page_offset = page.spans[0].offset
@@ -118,7 +129,7 @@ class AzureFormRecognizerClient:
                             if idx >= 0 and idx < page_length:
                                 table_chars[idx] = table_id
 
-                # build page text by replacing charcters in table spans with table html and replace the characters corresponding to headers with html headers, if using layout
+                # build page text by replacing characters in table spans with table html and replace the characters corresponding to headers with html headers, if using layout
                 page_text = ""
                 added_tables = set()
                 for idx, table_id in enumerate(table_chars):
@@ -135,7 +146,7 @@ class AzureFormRecognizerClient:
                             if html_role is not None:
                                 page_text += f"</{html_role}>"
 
-                        page_text += form_recognizer_results.content[page_offset + idx]
+                        page_text += document_intelligence_results.content[page_offset + idx]
 
                     elif table_id not in added_tables:
                         page_text += self._table_to_html(tables_on_page[table_id])
@@ -149,7 +160,7 @@ class AzureFormRecognizerClient:
 
             return page_map
         except Exception as e:
-            logger.exception(f"Exception in begin_analyze_document_from_url: {e}")
-            raise ValueError(f"Error: {traceback.format_exc()}. Error: {e}")
+            logger.exception("Exception in begin_analyze_document_from_url: %s", e)
+            raise ValueError(f"Error: {traceback.format_exc()}. Error: {e}") from e
         finally:
             logger.info("Method begin_analyze_document_from_url ended")

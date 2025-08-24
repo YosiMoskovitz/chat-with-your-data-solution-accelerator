@@ -1,6 +1,6 @@
 from typing import List
 from .document_loading_base import DocumentLoadingBase
-from ..helpers.azure_form_recognizer_helper import AzureFormRecognizerClient
+from ..helpers.azure_document_intelligence_helper import AzureDocumentIntelligenceClient
 from ..common.source_document import SourceDocument
 
 
@@ -9,8 +9,8 @@ class LayoutDocumentLoading(DocumentLoadingBase):
         super().__init__()
 
     def load(self, document_url: str) -> List[SourceDocument]:
-        azure_form_recognizer_client = AzureFormRecognizerClient()
-        pages_content = azure_form_recognizer_client.begin_analyze_document_from_url(
+        azure_document_intelligence_client = AzureDocumentIntelligenceClient()
+        pages_content = azure_document_intelligence_client.begin_analyze_document_from_url(
             document_url, use_layout=True
         )
         documents = [

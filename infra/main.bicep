@@ -1125,7 +1125,7 @@ module formrecognizer 'core/ai/cognitiveservices.bicep' = {
     name: formRecognizerName
     location: location
     tags: tags
-    kind: 'FormRecognizer'
+    kind: 'DocumentIntelligence'
   }
 }
 
